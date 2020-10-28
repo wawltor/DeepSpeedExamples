@@ -1,7 +1,7 @@
 #! /bin/bash
 
 # Change for multinode config
-MP_SIZE=4
+MP_SIZE=1
 
 NUM_WORKERS=1
 NUM_GPUS_PER_WORKER=16
@@ -12,8 +12,8 @@ script_dir=$(dirname $script_path)
 config_json="$script_dir/ds_zero2_config.json"
 gpt_options=" \
        --model-parallel-size ${MP_SIZE} \
-       --num-layers 24 \
-       --hidden-size 1024 \
+       --num-layers 12 \
+       --hidden-size 512 \
        --num-attention-heads 16 \
        --batch-size 8 \
        --seq-length 1024 \
@@ -31,9 +31,11 @@ gpt_options=" \
        --weight-decay 1e-2 \
        --clip-grad 1.0 \
        --warmup .01 \
+       --fp16 \
+       --num-experts 1
        --checkpoint-activations \
        --deepspeed-activation-checkpointing \
-       --fp16 \
+       --log-interval 10
 "
 gpt_options="${gpt_options}
                --deepspeed \

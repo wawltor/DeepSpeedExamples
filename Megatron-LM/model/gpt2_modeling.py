@@ -50,7 +50,8 @@ class GPT2Model(torch.nn.Module):
                  max_sequence_length,
                  checkpoint_activations,
                  checkpoint_num_layers=1,
-                 parallel_output=True):
+                 parallel_output=True,
+                 num_experts=1):
 
         super(GPT2Model, self).__init__()
 
@@ -78,7 +79,8 @@ class GPT2Model(torch.nn.Module):
                                                        attention_dropout_prob,
                                                        output_dropout_prob,
                                                        checkpoint_activations,
-                                                       checkpoint_num_layers)
+                                                       checkpoint_num_layers,
+                                                       num_experts=num_experts)
 
     def forward(self, input_ids, position_ids, attention_mask):
 
@@ -91,8 +93,9 @@ class GPT2Model(torch.nn.Module):
         embeddings = self.embedding_dropout(embeddings)
 
         # Transformer.
-        transformer_output = self.transformer(embeddings, attention_mask)
+        transformer_output, *moe_losses = self.transformer(embeddings, attention_mask)
 
+        
         # Parallel logits.
         transformer_output_parallel = mpu.copy_to_model_parallel_region(
             transformer_output)
@@ -100,10 +103,9 @@ class GPT2Model(torch.nn.Module):
                                    self.word_embeddings.weight)
 
         if self.parallel_output:
-            return logits_parallel
+            return (logits_parallel, *moe_losses)
 
-        return mpu.gather_from_model_parallel_region(logits_parallel)
-
+        return (mpu.gather_from_model_parallel_region(logits_parallel), *moe_losses) 
 
 def gpt2_get_params_for_weight_decay_optimization(module):
 

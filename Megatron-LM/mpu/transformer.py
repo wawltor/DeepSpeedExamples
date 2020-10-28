@@ -25,6 +25,7 @@ from .initialize import get_model_parallel_world_size
 from .layers import ColumnParallelLinear
 from .layers import RowParallelLinear
 from .mappings import gather_from_model_parallel_region
+from mixture_of_experts import MoE
 
 import deepspeed
 
@@ -165,6 +166,112 @@ def gelu_impl(x):
 def gelu(x):
     return gelu_impl(x)
 
+class GPT2ParallelMLPMoE(torch.nn.Module):
+    """MLP for GPT2.
+
+    MLP will take the input with h hidden state, project it to 4*h
+    hidden dimension, perform gelu transformation, and project the
+    state back into h hidden dimension. At the end, dropout is also
+    applied.
+
+    Arguments:
+        hidden_size: The hidden size of the self attention.
+        output_dropout_prob: dropout probability for the outputs
+                             after self attention and final output.
+        init_method: initialization method used for the weights. Note
+                     that all biases are initialized to zero and
+                     layernorm weight are initialized to one.
+        output_layer_init_method: output layer initialization. If None,
+                                  use `init_method`.
+    """
+
+    def __init__(self, hidden_size, output_dropout_prob, init_method,
+                 output_layer_init_method=None, num_experts=1):
+        super(GPT2ParallelMLPMoE, self).__init__()
+        # Set output layer initialization if not provided.
+        if output_layer_init_method is None:
+            output_layer_init_method = init_method
+
+        self.experts = GPT2ParallelMLPExperts(hidden_size, init_method, 
+                                            output_layer_init_method=output_layer_init_method,
+                                            num_experts = num_experts) 
+        
+        self.MoE = MoE(
+                    hidden_size,
+                    num_experts=num_experts,
+                    second_policy_train = 'random', # in top_2 gating, policy for whether to use a second-place expert
+                    second_policy_eval = 'random',  # all (always) | none (never) | threshold (if gate value > the given threshold) | random (if gate value > threshold * random_uniform(0, 1))
+                    second_threshold_train = 0.2,
+                    second_threshold_eval = 0.2,
+                    capacity_factor_train = 1.25,   # experts have fixed capacity per batch. we need some extra capacity in case gating is not perfectly balanced.
+                    capacity_factor_eval = 2.,      # capacity_factor_* should be set to a value >=1
+                    loss_coef = 1e-2,                # multiplier on the auxiliary expert balancing auxiliary loss
+                    experts=self.experts)
+
+        self.dropout = torch.nn.Dropout(output_dropout_prob)
+
+
+    def forward(self, hidden_states):
+        output, loss = self.MoE(hidden_states)
+        output = self.dropout(output)
+        return output, loss
+
+class GPT2ParallelMLPExperts(torch.nn.Module):
+    """MLP for GPT2.
+
+    MLP Expert will take the input with h hidden state, project it to 4*h
+    hidden dimension, perform gelu transformation, and project the
+    state back into h hidden dimension.
+
+    Arguments:
+        hidden_size: The hidden size of the self attention.
+        init_method: initialization method used for the weights. Note
+                     that all biases are initialized to zero and
+                     layernorm weight are initialized to one.
+        output_layer_init_method: output layer initialization. If None,
+                                  use `init_method`.
+    """
+
+    def __init__(self, hidden_size, init_method,
+                 output_layer_init_method=None, num_experts=1):
+        super(GPT2ParallelMLPExperts, self).__init__()
+
+        self.num_experts = num_experts
+
+        # Set output layer initialization if not provided.
+        if output_layer_init_method is None:
+            output_layer_init_method = init_method
+
+        # Project to 4h.
+        self.dense_h_to_4h = torch.nn.ModuleList([ColumnParallelLinear(hidden_size, 4*hidden_size,
+                                                  gather_output=False,
+                                                  init_method=init_method) for _ in range (num_experts)])
+        # Project back to h.
+        self.dense_4h_to_h = torch.nn.ModuleList([RowParallelLinear(
+            4*hidden_size,
+            hidden_size,
+            input_is_parallel=True,
+            init_method=output_layer_init_method) for _ in range (num_experts)])
+        
+        
+    def forward(self, hidden_states):
+        #print(hidden_states.shape)
+        # [e, b, s, 4h]
+        
+        outputs = []
+        for i in range(self.num_experts):
+            # [1, b, s, 4h]
+            intermediate_parallel = self.dense_h_to_4h[i](hidden_states[i])
+            intermediate_parallel = gelu(intermediate_parallel)
+
+            # e x [b, s, h]
+            outputs.append(self.dense_4h_to_h[i](intermediate_parallel))
+        
+        #e x [b, s, h] - > [e, b, s, h]
+        output = torch.stack(outputs)
+        return output
+
+
 
 class GPT2ParallelMLP(torch.nn.Module):
     """MLP for GPT2.
@@ -211,7 +318,12 @@ class GPT2ParallelMLP(torch.nn.Module):
         # [b, s, h]
         output = self.dense_4h_to_h(intermediate_parallel)
         output = self.dropout(output)
-        return output
+        
+        #the second output is a fake loss value meant to provide
+        #consistency when using MoE
+        second_output= torch.tensor(0.0, device=output.device)
+        second_output.requires_grad = False
+        return output, second_output
 
 
 class GPT2ParallelTransformerLayer(torch.nn.Module):
@@ -249,7 +361,8 @@ class GPT2ParallelTransformerLayer(torch.nn.Module):
                  output_dropout_prob,
                  layernorm_epsilon,
                  init_method,
-                 output_layer_init_method=None):
+                 output_layer_init_method=None,
+                 num_experts=1):
         super(GPT2ParallelTransformerLayer, self).__init__()
         # Set output layer initialization if not provided.
         if output_layer_init_method is None:
@@ -272,12 +385,21 @@ class GPT2ParallelTransformerLayer(torch.nn.Module):
                                                   eps=layernorm_epsilon)
 
         # MLP
-        self.mlp = GPT2ParallelMLP(
-            hidden_size,
-            output_dropout_prob,
-            init_method,
-            output_layer_init_method=output_layer_init_method)
+        if num_experts == 1:
+            self.mlp = GPT2ParallelMLP(
+                hidden_size,
+                output_dropout_prob,
+                init_method,
+                output_layer_init_method=output_layer_init_method)
+        else:
+            self.mlp = GPT2ParallelMLPMoE(
+                hidden_size,
+                output_dropout_prob,
+                init_method,
+                output_layer_init_method=output_layer_init_method,
+                num_experts=num_experts)
 
+    # forward
     def forward(self, hidden_states, ltor_mask):
         # hidden_states: [b, s, h]
         # ltor_mask: [1, 1, s, s]
@@ -291,11 +413,10 @@ class GPT2ParallelTransformerLayer(torch.nn.Module):
         # Layer norm post the self attention.
         layernorm_output = self.post_attention_layernorm(layernorm_input)
         # MLP.
-        mlp_output = self.mlp(layernorm_output)
+        mlp_output, moe_loss = self.mlp(layernorm_output)
         # Second residual connection.
         output = layernorm_input + mlp_output
-
-        return output
+        return output, moe_loss
 
 
 def unscaled_init_method(sigma):
@@ -359,7 +480,8 @@ class GPT2ParallelTransformer(torch.nn.Module):
                  checkpoint_num_layers=1,
                  layernorm_epsilon=1.0e-5,
                  init_method_std=0.02,
-                 use_scaled_init_for_output_weights=True):
+                 use_scaled_init_for_output_weights=True,
+                 num_experts=1):
         super(GPT2ParallelTransformer, self).__init__()
         # Store activation checkpoiting flag.
         self.checkpoint_activations = checkpoint_activations
@@ -369,7 +491,7 @@ class GPT2ParallelTransformer(torch.nn.Module):
         if use_scaled_init_for_output_weights:
             output_layer_init_method = scaled_init_method(init_method_std,
                                                           num_layers)
-        def get_layer():
+        def get_layer(i):
             return GPT2ParallelTransformerLayer(
                 hidden_size,
                 num_attention_heads,
@@ -377,11 +499,12 @@ class GPT2ParallelTransformer(torch.nn.Module):
                 output_dropout_prob,
                 layernorm_epsilon,
                 unscaled_init_method(init_method_std),
-                output_layer_init_method=output_layer_init_method)
+                output_layer_init_method=output_layer_init_method,
+                num_experts=num_experts if i % 2 == 0 else 1)
 
         # Transformer layers.
         self.layers = torch.nn.ModuleList(
-            [get_layer() for _ in range(num_layers)])
+            [get_layer(i) for i in range(num_layers)])
 
         # Final layer norm before output.
         self.final_layernorm = LayerNorm(hidden_size, eps=layernorm_epsilon)
@@ -398,27 +521,31 @@ class GPT2ParallelTransformer(torch.nn.Module):
             def custom_forward(*inputs):
                 layers_ = self.layers[start:end]
                 x_ = inputs[0]
+                moe_losses = []
                 for layer in layers_:
-                    x_ = layer(x_, inputs[1])
-                return x_
+                    x_, moe_loss = layer(x_, inputs[1])
+                    moe_losses.append(moe_loss)
+                return (x_, *moe_losses)
             return custom_forward
 
+        moe_losses = []
         if self.checkpoint_activations:
             l = 0
             num_layers = len(self.layers)
             chunk_length = self.checkpoint_num_layers
             while l < num_layers:
-                hidden_states = checkpoint(custom(l, l+chunk_length),
+                hidden_states, *local_moe_losses = checkpoint(custom(l, l+chunk_length),
                                            hidden_states, attention_mask)
+                moe_losses.extend(local_moe_losses)
                 l += chunk_length
         else:
             for layer in self.layers:
-                hidden_states = layer(hidden_states, attention_mask)
-
+                hidden_states, moe_loss = layer(hidden_states, attention_mask)
+                moe_losses.append(moe_loss)
         # Final layer norm.
         output = self.final_layernorm(hidden_states)
-
-        return output
+        
+        return (output, *moe_losses) #moe_losses[0], moe_losses[1], moe_losses[2], moe_losses[3]
 
 
 class BertParallelSelfAttention(torch.nn.Module):

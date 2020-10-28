@@ -42,6 +42,8 @@ def add_model_config_args(parser):
                        'set to 4*`--hidden-size` if it is None')
     group.add_argument('--num-layers', type=int, default=24,
                        help='num decoder layers')
+    group.add_argument('--num-experts', type=int, default=1,
+                       help='num decoder layers')
     group.add_argument('--layernorm-epsilon', type=float, default=1e-5,
                        help='layer norm epsilon')
     group.add_argument('--hidden-dropout', type=float, default=0.1,

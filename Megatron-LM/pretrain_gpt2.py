@@ -67,8 +67,9 @@ def get_model(args):
                       max_sequence_length=args.max_position_embeddings,
                       checkpoint_activations=args.checkpoint_activations,
                       checkpoint_num_layers=args.checkpoint_num_layers,
-                      parallel_output=True)
-
+                      parallel_output=True,
+                      num_experts=args.num_experts)
+    
     if mpu.get_data_parallel_rank() == 0:
         print(' > number of parameters on model parallel rank {}: {}'.format(
             mpu.get_model_parallel_rank(),
@@ -296,12 +297,23 @@ def forward_step(data_iterator, model, args, timers):
     timers('batch generator').stop()
 
     # Forward model.
-    output = model(tokens, position_ids, attention_mask)
+    output, *other_losses = model(tokens, position_ids, attention_mask)
+    
     losses = mpu.vocab_parallel_cross_entropy(output.contiguous().float(),
                                               labels)
     loss_mask = loss_mask.view(-1)
+    
     loss = torch.sum(losses.view(-1) * loss_mask) / loss_mask.sum()
+    
+    moe_losses = []
+    for moe_loss in other_losses:
+        if moe_loss is not None:
+            moe_losses.append(moe_loss)      
 
+    #print(f"Moe Losses: {moe_losses}, actual loss {loss}")
+    moe_loss = sum(moe_losses)
+    loss = loss + moe_loss
+    
     return loss
 
 
