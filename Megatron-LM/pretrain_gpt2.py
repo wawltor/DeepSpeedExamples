@@ -310,8 +310,11 @@ def forward_step(data_iterator, model, args, timers):
         if moe_loss is not None:
             moe_losses.append(moe_loss)      
 
+    
     #print(f"Moe Losses: {moe_losses}, actual loss {loss}")
     moe_loss = sum(moe_losses)
+    #if torch.distributed.get_rank() == 0:
+    #    print(f"Moe Loss {moe_loss}")
     loss = loss + moe_loss
     
     return loss
