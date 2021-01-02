@@ -458,7 +458,7 @@ class GPT2Dataset(data.Dataset):
     def __init__(self, ds,
                  max_seq_len=1024,
                  num_samples=None,
-                 weighted=True,
+                 weighted=False,
                  sample_across_doc=True,
                  random_across_doc_sampling=True,
                  sentence_start=False, **kwargs):
@@ -484,7 +484,9 @@ class GPT2Dataset(data.Dataset):
                 lens = np.array([len(d['text']) if isinstance(d, dict)
                                  else len(d) for d in self.ds])
             self.total_len = np.sum(lens)
-            self.weighting = list(accumulate(lens))
+            if not isinstance(lens, list):
+                lens = np.array([lens]) 
+            self.weighting = list(accumulate(lens.tolist()))
         else:
             self.weighting = None
 
@@ -504,37 +506,21 @@ class GPT2Dataset(data.Dataset):
         rng = np.random.RandomState(seed=[rng.randint(0, 2**32-1) for _ in range(16)])
 
         # get possibly weighted random index from dataset
-        data_idx = self.get_weighted_samples(rng)
+        #data_idx = self.get_weighted_samples(rng)
+        data_idx = idx
+        #print(data_idx)
 #        data_idx = rng.choice(self.ds_len, p=self.weighting)
         tokens = self.getidx(data_idx)
 
         # truncate or pad tokens
         num_tokens = len(tokens)
-        tokens_to_strip = num_tokens - self.max_seq_len - 1
-        if tokens_to_strip > 0:
-            strip_left_tokens = rng.randint(tokens_to_strip + 1)
-            tokens = tokens[strip_left_tokens:]
-            if self.sentence_start:
-                token_copy = list(tokens)
-                not_done = True
-                while (len(token_copy) > 0) and not_done:
-                    tok = token_copy.pop(0)
-                    if self.contains_sentence_end(tok):
-                        tokens = token_copy
-                        not_done = False
-            strip_right_rokens = len(tokens) - self.max_seq_len - 1
-            if strip_right_rokens > 0:
-                tokens = tokens[:-strip_right_rokens]
-
-        if self.sample_across_doc:
-            while (len(tokens) < (self.max_seq_len + 1)):
-                if self.random_across_doc_sampling:
-                    data_idx = self.get_weighted_samples(rng)
-                else:
-                    data_idx = (data_idx + 1) % self.ds_len
-                tokens += self.getidx(data_idx)
-            tokens = tokens[:(self.max_seq_len+1)]
-
+        tokens_to_remove = num_tokens - self.max_seq_len - 1
+        if tokens_to_remove > 0:
+            remove_left_tokens = 0#rng.randint(tokens_to_remove + 1)
+            tokens = tokens[remove_left_tokens:]
+            remove_right_rokens = len(tokens) - self.max_seq_len - 1
+            if remove_right_rokens > 0:
+                tokens = tokens[:-remove_right_rokens]
         tokens = self.pad_seq(tokens)
         return {'text': np.array(tokens),}
 
@@ -542,7 +528,6 @@ class GPT2Dataset(data.Dataset):
         data = self.ds[data_idx]
         if isinstance(data, dict):
             data = data['text']
-        # tokenize
         tokenization = self.tokenizer.EncodeAsIds(data)
         tokenization.append(self.tokenizer.get_command('eos'))
         tokens = tokenization.tokenization

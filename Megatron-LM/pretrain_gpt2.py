@@ -52,7 +52,6 @@ import torch.distributed as dist
 
 from gpt2_data_loader import make_gpt2_dataloaders
 
-
 def get_model(args):
     """Build the model."""
 
@@ -173,7 +172,7 @@ def setup_model_and_optimizer(args):
             dist_init_required=False
         )
 
-    if args.load is not None:
+    if args.load is not None and False:
         args.iteration = load_checkpoint(model, optimizer, lr_scheduler, args)
     else:
         args.iteration = 0
@@ -185,6 +184,7 @@ def get_masks_and_position_ids(data,
                                eod_token,
                                reset_position_ids,
                                reset_attention_mask):
+    print("reset_position_ids:{}, reset_attention_mask:{}".format(reset_position_ids, reset_attention_mask))
     # Extract batch size and sequence length.
     batch_size, seq_length = data.size()
 
@@ -223,7 +223,7 @@ def get_masks_and_position_ids(data,
             prev_index = 0
             for j in range(eod_index.size()[0]):
                 i = eod_index[j]
-                # Mask attention loss.
+                # Mask attenti n loss.
                 if reset_attention_mask:
                     attention_mask[b, 0, (i+1):, :(i+1)] = 0
                 # Reset positions.
@@ -266,6 +266,7 @@ def get_batch(data_iterator, args, timers):
     tokens = tokens_[:, :-1].contiguous()
 
     # Get the masks and postition ids.
+    print("just for the check")
     attention_mask, loss_mask, position_ids = get_masks_and_position_ids(
         tokens,
         args.eod_token,
@@ -289,11 +290,15 @@ def forward_step(data_iterator, model, args, timers):
 
     # Forward model.
     output = model(tokens, position_ids, attention_mask)
-    losses = mpu.vocab_parallel_cross_entropy(output.contiguous().float(),
-                                              labels)
+    print("before loss:{}".format(output.mean()))
+    #losses = mpu.vocab_parallel_cross_entropy(output.contiguous().float(),
+                                              #labels)
+    output = output.contiguous().transpose(2, 1)
+    lossfunc = torch.nn.CrossEntropyLoss(reduction="none")
+    losses = lossfunc(output, labels)
     loss_mask = loss_mask.view(-1)
-    loss = torch.sum(losses.view(-1) * loss_mask) / loss_mask.sum()
-
+    loss = torch.sum(losses.view(-1) * loss_mask) 
+    loss = loss / loss_mask.sum()
     return loss
 
 
@@ -302,8 +307,8 @@ def backward_step(optimizer, model, lm_loss, args, timers):
 
     # Total loss.
     loss = lm_loss
-
     # Backward pass.
+    print("learing rate:{}".format(optimizer.param_groups[0]["lr"]))
     if args.deepspeed:
         model.backward(loss)
     else:
@@ -312,7 +317,6 @@ def backward_step(optimizer, model, lm_loss, args, timers):
             optimizer.backward(loss, update_master_grads=False)
         else:
             loss.backward()
-
     # Reduce across processes.
     lm_loss_reduced = lm_loss
 
@@ -327,6 +331,7 @@ def backward_step(optimizer, model, lm_loss, args, timers):
         reduced_losses.data = reduced_losses.data / args.world_size
         if not USE_TORCH_DDP:
             timers('allreduce').start()
+            print("in all reduce")
             model.allreduce_params(reduce_after=False,
                                    fp32_allreduce=args.fp32_allreduce)
             timers('allreduce').stop()
@@ -336,15 +341,16 @@ def backward_step(optimizer, model, lm_loss, args, timers):
     # Update master gradients.
     if not args.deepspeed:
         if args.fp16:
+            print("in fp16")
             optimizer.update_master_grads()
 
         # Clipping gradients helps prevent the exploding gradient.
-        if args.clip_grad > 0:
+        if args.clip_grad > 0 and  False:
             if not args.fp16:
                 mpu.clip_grad_norm(model.parameters(), args.clip_grad)
             else:
                 optimizer.clip_master_grads(args.clip_grad)
-
+    
     return lm_loss_reduced
 
 def see_memory_usage(message, force=False):
@@ -366,7 +372,7 @@ def train_step(data_iterator, model, optimizer, lr_scheduler,
 
     # Forward model for one step.
     timers('forward').start()
-    lm_loss = forward_step(data_iterator, model, args, timers)
+    lm_loss= forward_step(data_iterator, model, args, timers)
     timers('forward').stop()
 
     #print_rank_0("loss is {}".format(lm_loss))
@@ -468,6 +474,8 @@ def train(model, optimizer, lr_scheduler,
                   format(rank, time_str, iteration), flush=True)
             exit()
 
+        if iteration == 50:
+            exit()
     return iteration, skipped_iters
 
 
@@ -659,7 +667,10 @@ def main():
 
     # Model, optimizer, and learning rate.
     model, optimizer, lr_scheduler = setup_model_and_optimizer(args)
-
+    #save_checkpoint(0, model, optimizer, lr_scheduler, args)
+    #return 
+    sd = torch.load("checkpoints/gpt2_345m/iter_0000000/mp_rank_00/model_optim_rng.pt")
+    model.load_state_dict(sd['model'])
     # Resume data loader if necessary.
     if args.resume_dataloader:
         if train_data is not None:
@@ -678,7 +689,6 @@ def main():
         val_data_iterator = iter(val_data)
     else:
         val_data_iterator = None
-
     #TODO: figure out how to properly set this especially when resuming training
     iteration = 0
     if args.train_iters > 0:
@@ -694,8 +704,8 @@ def main():
             val_loss = evaluate_and_print_results(prefix, val_data_iterator,
                                                   model, args, timers, False)
 
-    if args.save and iteration != 0:
-        save_checkpoint(iteration, model, optimizer, lr_scheduler, args)
+    #if args.save and iteration != 0:
+    #    save_checkpoint(iteration, model, optimizer, lr_scheduler, args)
 
     if test_data is not None:
         test_data_iterator = iter(test_data)

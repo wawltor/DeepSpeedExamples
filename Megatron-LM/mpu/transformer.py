@@ -126,12 +126,15 @@ class GPT2ParallelSelfAttention(torch.nn.Module):
         # Raw attention scores. [b, np, s, s]
         attention_scores = torch.matmul(query_layer,
                                         key_layer.transpose(-1, -2))
+        print("self scores 1:{}".format(attention_scores.sum()))
         attention_scores = attention_scores / math.sqrt(
             self.hidden_size_per_attention_head)
+        print("self scores 2:{}".format(attention_scores.sum()))
         # Apply the left to right attention mask.
         attention_scores = torch.mul(attention_scores, ltor_mask) - \
                            10000.0 * (1.0 - ltor_mask)
-
+        
+        print("self weights 1:{}".format(attention_scores.sum()))
         # Attention probabilities. [b, np, s, s]
         attention_probs = torch.nn.Softmax(dim=-1)(attention_scores)
         # This is actually dropping out entire tokens to attend to, which might
@@ -148,9 +151,11 @@ class GPT2ParallelSelfAttention(torch.nn.Module):
                                   (self.hidden_size_per_partition,)
         # [b, s, hp]
         context_layer = context_layer.view(*new_context_layer_shape)
+        print("self weights 2:{}".format(context_layer.sum()))
 
         # Output. [b, s, h]
         output = self.dense(context_layer)
+        print("self weights 3:{}".format(output.sum()))
         output = self.output_dropout(output)
 
         return output
@@ -257,7 +262,6 @@ class GPT2ParallelTransformerLayer(torch.nn.Module):
 
         # Layernorm on the input data.
         self.input_layernorm = LayerNorm(hidden_size, eps=layernorm_epsilon)
-
         # Self attention.
         self.attention = GPT2ParallelSelfAttention(
             hidden_size,
@@ -283,9 +287,12 @@ class GPT2ParallelTransformerLayer(torch.nn.Module):
         # ltor_mask: [1, 1, s, s]
 
         # Layer norm at the begining of the transformer layer.
+        print("before norm:{}".format(hidden_states.sum()))
         layernorm_output = self.input_layernorm(hidden_states)
+        print("after norm:{}".format(layernorm_output.abs().sum()))
         # Self attention.
         attention_output = self.attention(layernorm_output, ltor_mask)
+        print("attention_output:{}".format(attention_output.abs().sum()))
         # Residual connection.
         layernorm_input = hidden_states + attention_output
         # Layer norm post the self attention.

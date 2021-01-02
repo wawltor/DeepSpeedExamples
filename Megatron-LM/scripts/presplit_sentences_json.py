@@ -22,6 +22,10 @@ with open(input_file, 'r') as ifile:
       sent_list = []
       for line in parsed['text'].split('\n'):
           if line != '\n':
+              if len(line) < 10:
+                  continue 
               sent_list.extend(nltk.tokenize.sent_tokenize(line))
+      if len(sent_list) < 1:
+          continue
       parsed['text'] = line_seperator.join(sent_list)
       ofile.write(json.dumps(parsed)+'\n')

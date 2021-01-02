@@ -69,7 +69,7 @@ def make_dataset(path, seq_length, text_key, label_key, lazy=False, process_fn=N
         # multilabel dataset support (only for csvs)
         label_key = non_binary_cols
     def get_dataset_from_path(path_):
-        if lazy:
+        if lazy and False:
             # get lazily loaded dataset
             named_corpora = False
             if supported_corpus(path_):

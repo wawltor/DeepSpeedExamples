@@ -6,13 +6,13 @@ RANK=0
 WORLD_SIZE=1
 
 python pretrain_gpt2.py \
-       --num-layers 24 \
+       --num-layers 16 \
        --hidden-size 1024 \
        --num-attention-heads 16 \
-       --batch-size 8 \
+       --batch-size 2 \
        --seq-length 1024 \
        --max-position-embeddings 1024 \
-       --train-iters 320000 \
+       --train-iters 50 \
        --save checkpoints/gpt2_345m \
        --load checkpoints/gpt2_345m \
        --resume-dataloader \
@@ -20,15 +20,14 @@ python pretrain_gpt2.py \
        --lazy-loader \
        --tokenizer-type GPT2BPETokenizer \
        --cache-dir cache \
-       --split 949,50,1 \
+       --split 100 \
        --distributed-backend nccl \
        --lr 0.00015 \
        --lr-decay-style cosine \
        --weight-decay 1e-2 \
        --clip-grad 1.0 \
-       --warmup .01 \
+       --warmup .1 \
        --checkpoint-activations \
-       --fp16
 
 
 set +x

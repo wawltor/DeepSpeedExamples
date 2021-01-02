@@ -89,9 +89,11 @@ class GPT2Model(torch.nn.Module):
 
         # Dropout.
         embeddings = self.embedding_dropout(embeddings)
+        print("embedding mean:{}".format(embeddings.mean()))
 
         # Transformer.
         transformer_output = self.transformer(embeddings, attention_mask)
+        print("transformer output:{}".format(transformer_output.mean()))
 
         # Parallel logits.
         transformer_output_parallel = mpu.copy_to_model_parallel_region(

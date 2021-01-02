@@ -36,10 +36,10 @@ from .file_utils import cached_path
 logger = logging.getLogger(__name__)
 
 PRETRAINED_VOCAB_ARCHIVE_MAP = {
-    'gpt2': "https://s3.amazonaws.com/models.huggingface.co/bert/gpt2-vocab.json",
+    'gpt2': "./cache/gpt2/vocab.json" 
 }
 PRETRAINED_MERGES_ARCHIVE_MAP = {
-    'gpt2': "https://s3.amazonaws.com/models.huggingface.co/bert/gpt2-merges.txt",
+    'gpt2': "./cache/gpt2/merges.txt"
 }
 PRETRAINED_VOCAB_POSITIONAL_EMBEDDINGS_SIZE_MAP = {
     'gpt2': 1024,
@@ -261,7 +261,9 @@ class GPT2Tokenizer(object):
         return tokens
 
     def encode(self, text):
-        return self.convert_tokens_to_ids(self.tokenize(text))
+        bpe_tokens = self.tokenize(text) 
+        ids = self.convert_tokens_to_ids(self.tokenize(text))
+        return ids
 
     def decode(self, tokens):
         text = ''.join([self.decoder[token] for token in tokens])

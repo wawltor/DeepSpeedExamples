@@ -31,7 +31,7 @@ def add_model_config_args(parser):
                        'of initializing from scratch. See '
                        '--tokenizer-model-type to specify which pretrained '
                        'BERT model to use')
-    group.add_argument('--attention-dropout', type=float, default=0.1,
+    group.add_argument('--attention-dropout', type=float, default=0.0,
                        help='dropout probability for attention weights')
     group.add_argument('--num-attention-heads', type=int, default=16,
                        help='num of transformer attention heads')
@@ -44,7 +44,7 @@ def add_model_config_args(parser):
                        help='num decoder layers')
     group.add_argument('--layernorm-epsilon', type=float, default=1e-5,
                        help='layer norm epsilon')
-    group.add_argument('--hidden-dropout', type=float, default=0.1,
+    group.add_argument('--hidden-dropout', type=float, default=0.0,
                        help='dropout probability for hidden state transformer')
     group.add_argument('--max-position-embeddings', type=int, default=512,
                        help='maximum number of position embeddings to use')
@@ -117,7 +117,7 @@ def add_training_args(parser):
                        help='gradient clipping')
     group.add_argument('--train-iters', type=int, default=1000000,
                        help='total number of iterations to train over all training runs')
-    group.add_argument('--log-interval', type=int, default=100,
+    group.add_argument('--log-interval', type=int, default=1,
                        help='report interval')
     group.add_argument('--exit-interval', type=int, default=None,
                        help='Exit the program after this many new iterations.')
